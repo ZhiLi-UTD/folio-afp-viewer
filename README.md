@@ -5,8 +5,7 @@ lets you explore their structured-field tree, inspect each field with a
 synchronized hex view, browse embedded resources (with image previews), and read
 a document summary — in a calm, native-macOS-feeling interface.
 
-> Status: **Phase 1 (structure inspector)** — see `docs/plans/`. Phase 2 adds
-> best-effort page rendering.
+> Status: **Phase 1 (inspector) + Phase 2 MVP (page rendering)** — see `docs/plans/`.
 
 ## What it does today
 
@@ -16,6 +15,10 @@ a document summary — in a calm, native-macOS-feeling interface.
   synced to the selection.
 - **Resource browser** — images, page segments, overlays and fonts; JPEG image
   resources preview inline.
+- **Render** — positioned page text laid out on a correctly-sized page canvas,
+  with page navigation, zoom/fit, and export-to-PNG. Rendering is best-effort
+  text layout (PTOCA positioning on PGD geometry); precise image placement,
+  graphics/bar codes, overlays, and true FOCA font metrics are future work.
 - **Search & summary** — live filter plus page/field/resource counts and a
   problems list. The parser is resilient: malformed files never crash it.
 
