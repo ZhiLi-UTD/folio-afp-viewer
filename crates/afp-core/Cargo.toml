@@ -1,0 +1,8 @@
+[package]
+name = "afp-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure AFP (MO:DCA) parsing core for Folio — no UI."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
