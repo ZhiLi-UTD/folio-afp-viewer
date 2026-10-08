@@ -41,6 +41,11 @@ pub struct Document {
     pub field_count: usize,
 }
 
+/// Maximum nesting depth. Beyond this, deeper Begin fields are flattened to
+/// leaves so recursive tree consumers (summary, DTO mapping, drop) cannot
+/// overflow the stack on a pathological file. Far above any real AFP document.
+const MAX_DEPTH: usize = 512;
+
 /// An open Begin scope awaiting its matching End.
 struct Open {
     field: StructuredField,
@@ -87,14 +92,31 @@ impl Document {
         let mut root_children: Vec<Node> = Vec::new();
         let mut stack: Vec<Open> = Vec::new();
 
+        let mut depth_capped = false;
         for (index, field) in fields.into_iter().enumerate() {
             match names::classify(field.sfid) {
                 Kind::Begin => {
-                    stack.push(Open {
-                        index,
-                        field,
-                        children: Vec::new(),
-                    });
+                    if stack.len() >= MAX_DEPTH {
+                        // Pathological nesting: flatten deeper Begins to leaves
+                        // so recursive consumers can't overflow the stack.
+                        if !depth_capped {
+                            problems.push(Problem {
+                                message: format!(
+                                    "Nesting exceeds {MAX_DEPTH} levels; deeper fields flattened"
+                                ),
+                                at: field.record_range.start,
+                            });
+                            depth_capped = true;
+                        }
+                        let node = leaf(&field, index);
+                        push_child(&mut stack, &mut root_children, node);
+                    } else {
+                        stack.push(Open {
+                            index,
+                            field,
+                            children: Vec::new(),
+                        });
+                    }
                 }
                 Kind::End => match stack.pop() {
                     None => {
@@ -121,6 +143,10 @@ impl Document {
                         }
                         let node = close(open);
                         push_child(&mut stack, &mut root_children, node);
+                        // Keep the End field itself inspectable, as a sibling
+                        // after the closed scope (matches stream order).
+                        let end = leaf(&field, index);
+                        push_child(&mut stack, &mut root_children, end);
                     }
                 },
                 Kind::Other => {
@@ -190,12 +216,31 @@ mod tests {
             .build();
         let doc = Document::parse(&bytes).unwrap();
         assert!(doc.problems.is_empty(), "problems: {:?}", doc.problems);
-        assert_eq!(doc.root.children.len(), 1); // BDT
+        // Root holds BDT and its closing EDT (End fields are inspectable).
+        assert_eq!(doc.root.children.len(), 2);
         let bdt = &doc.root.children[0];
         assert_eq!(bdt.sfid, BDT);
-        assert_eq!(bdt.children.len(), 1); // BPG
+        assert_eq!(doc.root.children[1].sfid, EDT);
+        // BDT holds BPG and its closing EPG.
+        assert_eq!(bdt.children.len(), 2);
+        assert_eq!(bdt.children[0].sfid, BPG);
+        assert_eq!(bdt.children[1].sfid, EPG);
         assert_eq!(bdt.children[0].children.len(), 1); // PTX leaf
         assert_eq!(bdt.children[0].children[0].sfid, PTX);
+    }
+
+    #[test]
+    fn deep_nesting_is_capped_without_stack_overflow() {
+        let mut b = StreamBuilder::new();
+        for _ in 0..5000 {
+            b = b.begin(BPG); // never closed, deliberately pathological
+        }
+        let bytes = b.build();
+        let doc = Document::parse(&bytes).unwrap(); // must not overflow
+        assert!(doc
+            .problems
+            .iter()
+            .any(|p| p.message.contains("Nesting exceeds")));
     }
 
     #[test]
@@ -211,9 +256,9 @@ mod tests {
         let doc = Document::parse(&bytes).unwrap();
         assert_eq!(doc.problems.len(), 1);
         assert!(doc.problems[0].message.contains("never closed"));
-        // BDT still present with BPG nested inside.
+        // BDT still present; it holds BPG and BPG's closing EPG.
         assert_eq!(doc.root.children.len(), 1);
-        assert_eq!(doc.root.children[0].children.len(), 1);
+        assert_eq!(doc.root.children[0].children.len(), 2);
     }
 
     #[test]

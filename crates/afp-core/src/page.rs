@@ -68,7 +68,8 @@ impl Document {
         let (width_lu, height_lu, units_per_inch) = geometry(page, buf);
 
         let mut texts = Vec::new();
-        collect_text(page, buf, &mut texts);
+        let (mut cur_x, mut cur_y) = (0i32, 0i32);
+        collect_text(page, buf, &mut texts, &mut cur_x, &mut cur_y);
 
         let mut images = Vec::new();
         collect_images(page, buf, &mut images);
@@ -209,12 +210,23 @@ fn geometry(page: &Node, buf: &[u8]) -> (i32, i32, f32) {
     (DEFAULT_WIDTH_LU, DEFAULT_HEIGHT_LU, DEFAULT_UPI)
 }
 
-fn collect_text(node: &Node, buf: &[u8], out: &mut Vec<PositionedText>) {
+/// Collect positioned text across the page's PTX records, threading the PTOCA
+/// cursor so a presentation-text object split over several records stays
+/// positioned instead of resetting to the origin each record.
+fn collect_text(
+    node: &Node,
+    buf: &[u8],
+    out: &mut Vec<PositionedText>,
+    cur_x: &mut i32,
+    cur_y: &mut i32,
+) {
     for child in &node.children {
         if child.sfid == PTX {
             let d =
                 &buf[child.data_range.start.min(buf.len())..child.data_range.end.min(buf.len())];
-            for run in ptoca::parse_text(d) {
+            let mut runs = Vec::new();
+            ptoca::parse_into(d, cur_x, cur_y, &mut runs);
+            for run in runs {
                 out.push(PositionedText {
                     x: run.x,
                     y: run.y,
@@ -222,7 +234,7 @@ fn collect_text(node: &Node, buf: &[u8], out: &mut Vec<PositionedText>) {
                 });
             }
         }
-        collect_text(child, buf, out);
+        collect_text(child, buf, out, cur_x, cur_y);
     }
 }
 

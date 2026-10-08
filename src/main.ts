@@ -427,12 +427,14 @@ async function loadPageImages(layout: PageLayoutDto) {
       const data = await getResourceBytes(state.doc!.docId, img.nodeIndex);
       if (data.format !== "jpeg" || !data.base64) return;
       const el = new Image();
-      await new Promise<void>((resolve) => {
-        el.onload = () => resolve();
-        el.onerror = () => resolve();
+      // Only cache images that actually decode; a broken image would make
+      // drawImage throw and abort the whole page render.
+      const ok = await new Promise<boolean>((resolve) => {
+        el.onload = () => resolve(true);
+        el.onerror = () => resolve(false);
         el.src = `data:image/jpeg;base64,${data.base64}`;
       });
-      pageImages.set(img.nodeIndex, el);
+      if (ok) pageImages.set(img.nodeIndex, el);
     }),
   );
 }
@@ -450,20 +452,39 @@ function computeFitZoom(layout: PageLayoutDto): number {
   return Math.max(0.1, Math.min(availW / w1, availH / h1));
 }
 
+// Guard against pathological page size × zoom × DPR blowing up the backing
+// store. Cap each dimension and the total pixel count; CSS size is preserved so
+// the page still lays out correctly, only the backing resolution is reduced.
+const MAX_CANVAS_DIM = 8192;
+const MAX_CANVAS_PX = 24_000_000;
+
 function drawPage() {
   const layout = state.layout;
   if (!layout) return;
   const [cssW, cssH] = pageSizeAtZoom(layout, state.zoom);
   const dpr = window.devicePixelRatio || 1;
   const canvas = el.canvas;
-  canvas.width = Math.round(cssW * dpr);
-  canvas.height = Math.round(cssH * dpr);
+
+  // Clamp backing resolution.
+  let backW = cssW * dpr;
+  let backH = cssH * dpr;
+  const dimScale = Math.min(1, MAX_CANVAS_DIM / Math.max(backW, backH));
+  const pxScale = Math.sqrt(Math.min(1, MAX_CANVAS_PX / (backW * backH)));
+  const clamp = Math.min(dimScale, pxScale);
+  backW *= clamp;
+  backH *= clamp;
+
+  canvas.width = Math.max(1, Math.round(backW));
+  canvas.height = Math.max(1, Math.round(backH));
   canvas.style.width = `${cssW}px`;
   canvas.style.height = `${cssH}px`;
 
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Map CSS coordinates onto the (possibly clamped) backing store.
+  const sx = canvas.width / cssW;
+  const sy = canvas.height / cssH;
+  ctx.setTransform(sx, 0, 0, sy, 0, 0);
 
   // Page background.
   ctx.fillStyle = "#ffffff";

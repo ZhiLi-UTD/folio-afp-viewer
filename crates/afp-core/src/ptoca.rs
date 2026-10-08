@@ -28,16 +28,28 @@ const TRN: u8 = 0xDA; // Transparent Data      -> text
 /// consecutive Transparent Data runs that are not divided by an explicit move.
 const NOMINAL_ADVANCE: i32 = 144;
 
-/// Decode PTOCA text data into absolutely-positioned runs.
+/// Decode PTOCA text data into absolutely-positioned runs (fresh position).
 pub fn parse_text(data: &[u8]) -> Vec<TextRun> {
     let mut runs = Vec::new();
-    let mut pos = 0usize;
-    // Skip the control-sequence introducer if present.
-    if data.len() >= 2 && data[0] == 0x2B && data[1] == 0xD3 {
-        pos = 2;
-    }
     let (mut x, mut y) = (0i32, 0i32);
+    parse_into(data, &mut x, &mut y, &mut runs);
+    runs
+}
+
+/// Decode PTOCA text data, threading the inline/baseline cursor through `x`/`y`
+/// so a presentation-text object split across several PTX records keeps its
+/// position. Appends runs to `runs`.
+pub fn parse_into(data: &[u8], x: &mut i32, y: &mut i32, runs: &mut Vec<TextRun>) {
+    let mut pos = 0usize;
     while pos < data.len() {
+        // A new (unchained) control sequence is preceded by the 0x2B 0xD3
+        // introducer; consume it wherever it appears, not just at the start.
+        if pos + 1 < data.len() && data[pos] == 0x2B && data[pos + 1] == 0xD3 {
+            pos += 2;
+            if pos >= data.len() {
+                break;
+            }
+        }
         let len = data[pos] as usize;
         if len < 2 || pos + len > data.len() {
             break;
@@ -47,45 +59,49 @@ pub fn parse_text(data: &[u8]) -> Vec<TextRun> {
         match ty {
             AMI => {
                 if let Some(v) = be_u16(params) {
-                    x = v;
+                    *x = v;
                 }
             }
             RMI => {
-                if let Some(v) = be_u16(params) {
-                    x += v;
+                if let Some(v) = be_i16(params) {
+                    *x += v;
                 }
             }
             AMB => {
                 if let Some(v) = be_u16(params) {
-                    y = v;
+                    *y = v;
                 }
             }
             RMB => {
-                if let Some(v) = be_u16(params) {
-                    y += v;
+                if let Some(v) = be_i16(params) {
+                    *y += v;
                 }
             }
             TRN => {
                 let text = decode_ebcdic(params);
                 let advance = text.chars().count() as i32 * NOMINAL_ADVANCE;
-                runs.push(TextRun {
-                    x,
-                    y,
-                    text,
-                });
-                x += advance;
+                runs.push(TextRun { x: *x, y: *y, text });
+                *x += advance;
             }
             _ => {} // unknown control sequence: skip by its length
         }
         pos += len;
     }
-    runs
 }
 
 /// First two bytes of `p` as a big-endian unsigned value widened to i32.
 fn be_u16(p: &[u8]) -> Option<i32> {
     if p.len() >= 2 {
         Some(u16::from_be_bytes([p[0], p[1]]) as i32)
+    } else {
+        None
+    }
+}
+
+/// First two bytes of `p` as a big-endian *signed* value (relative moves).
+fn be_i16(p: &[u8]) -> Option<i32> {
+    if p.len() >= 2 {
+        Some(i16::from_be_bytes([p[0], p[1]]) as i32)
     } else {
         None
     }
@@ -145,6 +161,48 @@ mod tests {
         let runs = parse_text(&data);
         assert_eq!(runs.len(), 2);
         assert!(runs[1].x > runs[0].x);
+    }
+
+    #[test]
+    fn negative_relative_move_goes_backward() {
+        let mut data = vec![0x2B, 0xD3];
+        data.extend(cs(AMI, &100u16.to_be_bytes())); // x=100
+        data.extend(cs(RMI, &(-40i16).to_be_bytes())); // x=60
+        data.extend(cs(TRN, &ebcdic("A")));
+        let runs = parse_text(&data);
+        assert_eq!(runs[0].x, 60);
+    }
+
+    #[test]
+    fn handles_multiple_unchained_introducers() {
+        // Two separate control-sequence chains, each introduced by 0x2B 0xD3.
+        let mut data = vec![0x2B, 0xD3];
+        data.extend(cs(AMI, &100u16.to_be_bytes()));
+        data.extend(cs(TRN, &ebcdic("A")));
+        data.extend_from_slice(&[0x2B, 0xD3]); // second introducer
+        data.extend(cs(AMI, &500u16.to_be_bytes()));
+        data.extend(cs(TRN, &ebcdic("B")));
+        let runs = parse_text(&data);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].x, 100);
+        assert_eq!(runs[1].x, 500);
+    }
+
+    #[test]
+    fn stateful_parse_preserves_cursor_across_calls() {
+        let mut x = 0;
+        let mut y = 0;
+        let mut runs = Vec::new();
+        let mut a = vec![0x2B, 0xD3];
+        a.extend(cs(AMI, &300u16.to_be_bytes()));
+        a.extend(cs(AMB, &400u16.to_be_bytes()));
+        parse_into(&a, &mut x, &mut y, &mut runs);
+        // Second record continues without repeating absolute moves.
+        let mut b = vec![0x2B, 0xD3];
+        b.extend(cs(TRN, &ebcdic("X")));
+        parse_into(&b, &mut x, &mut y, &mut runs);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0], TextRun { x: 300, y: 400, text: "X".into() });
     }
 
     #[test]

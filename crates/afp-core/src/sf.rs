@@ -69,7 +69,14 @@ pub fn parse_fields(buf: &[u8]) -> Result<Vec<StructuredField>, ParseError> {
         let sfid = [buf[pos + 3], buf[pos + 4], buf[pos + 5]];
         let flag = buf[pos + 6];
         // bytes [pos+7, pos+8] are reserved
-        let data_start = pos + 9;
+        let mut data_start = pos + 9;
+        // Flag bit 0x01 = extension present: the payload is preceded by a
+        // 1-byte-length-prefixed introducer extension; skip it so decoders see
+        // real content. The length byte counts itself.
+        if flag & 0x01 != 0 && data_start < record_end {
+            let ext_len = buf[data_start] as usize;
+            data_start = (data_start + ext_len.max(1)).min(record_end);
+        }
         out.push(StructuredField {
             sfid,
             flag,
@@ -147,6 +154,17 @@ mod tests {
         bytes.extend_from_slice(&[0x5A, 0x00]); // truncated header at offset 16
         let err = parse_fields(&bytes).unwrap_err();
         assert_eq!(err, ParseError::Truncated { at: 16 });
+    }
+
+    #[test]
+    fn extension_present_flag_skips_extension() {
+        // flag=0x01, extension [len=3, 0xAA, 0xBB], then 2 real data bytes.
+        let bytes = vec![
+            0x5A, 0x00, 0x0D, 0xD3, 0xA8, 0xA8, 0x01, 0x00, 0x00, 0x03, 0xAA, 0xBB, 0xC1, 0xC2,
+        ];
+        let fields = parse_fields(&bytes).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].data_range, 12..14); // extension skipped
     }
 
     #[test]

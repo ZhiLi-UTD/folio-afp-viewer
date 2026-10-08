@@ -42,11 +42,11 @@ fn open_afp(path: String, store: State<Store>) -> Result<DocumentDto, String> {
     let id = store.counter.fetch_add(1, Ordering::Relaxed);
     let doc_id = format!("doc{id}");
     let dto = to_document_dto(&doc, &bytes, doc_id.clone(), file_name_of(&path));
-    store
-        .files
-        .lock()
-        .expect("store lock")
-        .insert(doc_id, bytes);
+    let mut files = store.files.lock().expect("store lock");
+    // The front-end views one document at a time; drop any previously opened
+    // buffers so repeatedly opening files does not grow memory without bound.
+    files.clear();
+    files.insert(doc_id, bytes);
     Ok(dto)
 }
 

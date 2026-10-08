@@ -71,6 +71,13 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must win over components that set an explicit
+   display (grid/flex), otherwise hidden panes and the drop overlay stay
+   visible and intercept clicks. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
