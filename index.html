@@ -4,40 +4,82 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+    <title>Folio</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
+    <div id="app" class="app">
+      <!-- Toolbar -->
+      <header class="toolbar" data-tauri-drag-region>
+        <div class="toolbar__lead">
+          <span class="brand">Folio</span>
+          <button id="open-btn" class="btn btn--primary">Open…</button>
+          <span id="file-name" class="file-name" aria-live="polite"></span>
+        </div>
+        <div class="toolbar__trail">
+          <div
+            id="segmented"
+            class="segmented"
+            role="tablist"
+            aria-label="View"
+            hidden
+          >
+            <button class="segmented__item is-active" data-view="structure" role="tab">
+              Structure
+            </button>
+            <button class="segmented__item" data-view="resources" role="tab">
+              Resources
+            </button>
+          </div>
+          <input
+            id="search"
+            class="search"
+            type="search"
+            placeholder="Search"
+            aria-label="Search fields"
+            hidden
+          />
+        </div>
+      </header>
 
-      <div class="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/src/assets/vite.svg" class="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img
-            src="/src/assets/tauri.svg"
-            class="logo tauri"
-            alt="Tauri logo"
-          />
-        </a>
-        <a href="https://www.typescriptlang.org/docs" target="_blank">
-          <img
-            src="/src/assets/typescript.svg"
-            class="logo typescript"
-            alt="typescript logo"
-          />
-        </a>
+      <!-- Main three-pane body -->
+      <main class="body">
+        <!-- Empty / drop state -->
+        <section id="empty" class="empty">
+          <div class="empty__card">
+            <div class="empty__glyph" aria-hidden="true">▤</div>
+            <h1 class="empty__title">Open an AFP file</h1>
+            <p class="empty__hint">
+              Drag a <code>.afp</code> file here, or click Open to explore its
+              structure, resources, and bytes.
+            </p>
+            <button id="empty-open" class="btn btn--primary btn--lg">Open…</button>
+          </div>
+        </section>
+
+        <!-- Loaded document -->
+        <section id="workspace" class="workspace" hidden>
+          <aside class="sidebar">
+            <div id="source-list" class="source-list" role="tree" aria-label="Document"></div>
+          </aside>
+
+          <div class="detail">
+            <div id="inspector" class="inspector"></div>
+            <div class="hex">
+              <div class="hex__head">
+                <span id="hex-title" class="hex__title">Bytes</span>
+              </div>
+              <div id="hex-view" class="hex__view" role="group" aria-label="Hex bytes"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- Drag overlay -->
+      <div id="drop-overlay" class="drop-overlay" hidden>
+        <div class="drop-overlay__ring">Drop to open</div>
       </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
-
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
-    </main>
+    </div>
   </body>
 </html>
