@@ -89,6 +89,20 @@ pub fn with_image() -> Vec<u8> {
         .build()
 }
 
+/// Like [`with_image`] but the JPEG is split across several Image Picture Data
+/// records, mirroring how real IOCA images exceed the single-record size limit.
+pub fn with_image_split() -> Vec<u8> {
+    let mut b = StreamBuilder::new()
+        .begin(BDT)
+        .begin(BRG)
+        .field(BR, &fqn_triplet("PIC2"))
+        .begin(BIM);
+    for chunk in sample_jpeg::SAMPLE_JPEG.chunks(64) {
+        b = b.other(IPD, chunk);
+    }
+    b.end(EIM).end(ER).end(ERG).end(EDT).build()
+}
+
 /// A deliberately malformed stream: a page is opened but never closed, and a
 /// stray End appears. Used to verify the parser stays resilient.
 pub fn malformed() -> Vec<u8> {
@@ -108,6 +122,7 @@ pub fn all_fixtures() -> Vec<(&'static str, Vec<u8>)> {
         ("simple.afp", simple()),
         ("multi-page.afp", multi_page()),
         ("with-image.afp", with_image()),
+        ("with-image-split.afp", with_image_split()),
         ("malformed.afp", malformed()),
     ]
 }

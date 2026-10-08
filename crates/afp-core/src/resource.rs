@@ -49,7 +49,7 @@ impl Document {
     }
 }
 
-fn find_in<'a>(node: &'a Node, index: usize) -> Option<&'a Node> {
+fn find_in(node: &Node, index: usize) -> Option<&Node> {
     if node.index == index {
         return Some(node);
     }

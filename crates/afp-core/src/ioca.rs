@@ -7,7 +7,6 @@
 //! (FS10 G4/MMR, uncompressed IM) report [`ImageFormat::Unsupported`].
 
 use crate::tree::{Document, Node};
-use std::ops::Range;
 
 /// Detected image encoding of an extracted image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -35,11 +34,16 @@ impl Document {
     }
 }
 
-/// Extract a previewable image from `node` by scanning its subtree bytes.
+/// Extract a previewable image from `node`.
+///
+/// Concatenates the *data* bytes of the node and its descendants in document
+/// order (so the structured-field headers are excluded) and scans the result
+/// for a JPEG. Excluding headers is what makes multi-record IOCA images — where
+/// a JPEG is split across several Image Picture Data records — reassemble
+/// correctly instead of being spliced with `0x5A` introducers.
 pub fn extract_image(node: &Node, buf: &[u8]) -> ExtractedImage {
-    let span = subtree_span(node);
-    let region = &buf[span.start.min(buf.len())..span.end.min(buf.len())];
-    match find_jpeg(region) {
+    let data = collect_data(node, buf);
+    match find_jpeg(&data) {
         Some(jpeg) => ExtractedImage {
             format: ImageFormat::Jpeg,
             bytes: jpeg.to_vec(),
@@ -51,21 +55,21 @@ pub fn extract_image(node: &Node, buf: &[u8]) -> ExtractedImage {
     }
 }
 
-/// Byte span covering a node and all of its descendants.
-fn subtree_span(node: &Node) -> Range<usize> {
-    let mut start = node.record_range.start;
-    let mut end = node.record_range.end;
-    visit(node, &mut |n| {
-        start = start.min(n.record_range.start);
-        end = end.max(n.record_range.end);
-    });
-    start..end
+/// Concatenate the data-range bytes of `node` and all descendants, in order.
+fn collect_data(node: &Node, buf: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_data(node, buf, &mut out);
+    out
 }
 
-fn visit(node: &Node, f: &mut impl FnMut(&Node)) {
+fn push_data(node: &Node, buf: &[u8], out: &mut Vec<u8>) {
+    let start = node.data_range.start.min(buf.len());
+    let end = node.data_range.end.min(buf.len());
+    if start < end {
+        out.extend_from_slice(&buf[start..end]);
+    }
     for child in &node.children {
-        f(child);
-        visit(child, f);
+        push_data(child, buf, out);
     }
 }
 
@@ -98,6 +102,18 @@ mod tests {
     }
 
     #[test]
+    fn reassembles_jpeg_split_across_records() {
+        // Real IOCA splits image data across multiple IPD records; the
+        // extractor must stitch the data bytes back without header bytes.
+        let bytes = afpgen::with_image_split();
+        let doc = Document::parse(&bytes).unwrap();
+        let res = doc.resources(&bytes);
+        let img = doc.extract_image(res[0].node_index, &bytes).unwrap();
+        assert_eq!(img.format, ImageFormat::Jpeg);
+        assert_eq!(img.bytes, SAMPLE_JPEG);
+    }
+
+    #[test]
     fn non_image_object_is_unsupported() {
         let bytes = afpgen::simple();
         let doc = Document::parse(&bytes).unwrap();
@@ -105,5 +121,12 @@ mod tests {
         let img = extract_image(&doc.root, &bytes);
         assert_eq!(img.format, ImageFormat::Unsupported);
         assert!(img.bytes.is_empty());
+    }
+
+    #[test]
+    fn soi_without_eoi_is_unsupported() {
+        // A truncated JPEG (SOI present, no EOI) must not be returned as valid.
+        let data = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        assert!(find_jpeg(&data).is_none());
     }
 }

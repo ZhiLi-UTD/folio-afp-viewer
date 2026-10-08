@@ -139,4 +139,23 @@ mod tests {
     fn empty_buffer_is_not_afp() {
         assert_eq!(parse_fields(&[]).unwrap_err(), ParseError::NotAfp);
     }
+
+    #[test]
+    fn mid_stream_truncation_reports_offset() {
+        // One valid record (16 bytes) followed by a short, incomplete header.
+        let mut bytes = one_bdt();
+        bytes.extend_from_slice(&[0x5A, 0x00]); // truncated header at offset 16
+        let err = parse_fields(&bytes).unwrap_err();
+        assert_eq!(err, ParseError::Truncated { at: 16 });
+    }
+
+    #[test]
+    fn empty_data_record_has_empty_data_range() {
+        // len=8 => zero data bytes.
+        let bytes = vec![0x5A, 0x00, 0x08, 0xD3, 0xA8, 0xA8, 0x00, 0x00, 0x00];
+        let fields = parse_fields(&bytes).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].data_range, 9..9);
+        assert_eq!(fields[0].record_range, 0..9);
+    }
 }

@@ -16,10 +16,25 @@ impl StreamBuilder {
         Self::default()
     }
 
+    /// Maximum structured-field length (the 2-byte length field; AFP reserves
+    /// the high bit, so the usable maximum is 0x7FFF). Records larger than this
+    /// must be split across multiple structured fields.
+    pub const MAX_FIELD_LEN: usize = 0x7FFF;
+
     /// Append one structured field with the given SFID, flag, and data.
+    ///
+    /// Panics if `data` is too large to fit a single structured field — callers
+    /// must split large payloads (see [`StreamBuilder::MAX_FIELD_LEN`]). This is
+    /// deliberate: silently truncating the length byte would emit invalid AFP.
     pub fn field_with_flag(mut self, sfid: [u8; 3], flag: u8, data: &[u8]) -> Self {
         // len counts from the length bytes through the data: 2+3+1+2 + data.
-        let len = (8 + data.len()) as u16;
+        let total = 8 + data.len();
+        assert!(
+            total <= Self::MAX_FIELD_LEN,
+            "structured field too large: {total} bytes (max {}); split the payload",
+            Self::MAX_FIELD_LEN
+        );
+        let len = total as u16;
         self.buf.push(INTRODUCER);
         self.buf.extend_from_slice(&len.to_be_bytes());
         self.buf.extend_from_slice(&sfid);
