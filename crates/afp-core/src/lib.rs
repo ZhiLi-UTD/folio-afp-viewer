@@ -6,4 +6,5 @@
 //!
 //! Modules are added task-by-task per the Phase 1 plan.
 
+pub mod names;
 pub mod sf;
