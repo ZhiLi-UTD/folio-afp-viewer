@@ -6,5 +6,9 @@
 //!
 //! Modules are added task-by-task per the Phase 1 plan.
 
+pub mod build;
 pub mod names;
 pub mod sf;
+pub mod tree;
+
+pub use tree::{Document, Node, Problem};
