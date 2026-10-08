@@ -7,7 +7,7 @@
 use afp_core::ioca::ImageFormat;
 use afp_core::names::Kind;
 use afp_core::tree::Node;
-use afp_core::{Document, ExtractedImage, Resource, ResourceKind, Summary};
+use afp_core::{Document, ExtractedImage, PageLayout, Resource, ResourceKind, Summary};
 use serde::Serialize;
 
 fn hex(sfid: [u8; 3]) -> String {
@@ -176,9 +176,57 @@ pub fn image_dto(img: &ExtractedImage, base64: String) -> ImageDto {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDto {
+    pub x: i32,
+    pub y: i32,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageLayoutDto {
+    pub page_count: usize,
+    pub width_lu: i32,
+    pub height_lu: i32,
+    pub units_per_inch: f32,
+    pub texts: Vec<TextDto>,
+}
+
+pub fn page_layout_dto(layout: &PageLayout, page_count: usize) -> PageLayoutDto {
+    PageLayoutDto {
+        page_count,
+        width_lu: layout.width_lu,
+        height_lu: layout.height_lu,
+        units_per_inch: layout.units_per_inch,
+        texts: layout
+            .texts
+            .iter()
+            .map(|t| TextDto {
+                x: t.x,
+                y: t.y,
+                text: t.text.clone(),
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_page_layout() {
+        let bytes = afpgen::simple();
+        let doc = Document::parse(&bytes).unwrap();
+        let layout = doc.page_layout(0, &bytes).unwrap();
+        let dto = page_layout_dto(&layout, doc.page_count());
+        assert_eq!(dto.page_count, 1);
+        assert_eq!(dto.width_lu, 12240);
+        assert_eq!(dto.texts.len(), 2);
+        assert_eq!(dto.texts[0].text, "HELLO AFP");
+    }
 
     #[test]
     fn maps_simple_document() {
