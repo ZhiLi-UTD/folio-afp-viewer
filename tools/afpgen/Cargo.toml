@@ -1,0 +1,16 @@
+[package]
+name = "afpgen"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic AFP fixture generator for Folio tests and manual dogfooding."
+
+[lib]
+name = "afpgen"
+path = "src/lib.rs"
+
+[[bin]]
+name = "afpgen"
+path = "src/main.rs"
+
+[dependencies]
+afp-core = { path = "../../crates/afp-core" }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "crates/afp-core"]
+members = ["src-tauri", "crates/afp-core", "tools/afpgen"]
 
 [workspace.package]
 version = "0.1.0"

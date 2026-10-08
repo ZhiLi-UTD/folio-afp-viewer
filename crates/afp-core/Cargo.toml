@@ -6,3 +6,8 @@ description = "Pure AFP (MO:DCA) parsing core for Folio — no UI."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+
+# Dev-only cycle (allowed by Cargo): fixtures come from the afpgen generator,
+# which itself builds on afp-core's StreamBuilder.
+[dev-dependencies]
+afpgen = { path = "../../tools/afpgen" }
