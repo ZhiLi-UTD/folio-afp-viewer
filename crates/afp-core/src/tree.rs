@@ -37,6 +37,8 @@ pub struct Document {
     /// Synthetic root whose children are the top-level fields.
     pub root: Node,
     pub problems: Vec<Problem>,
+    /// Total structured fields in the stream (Begin + End + Other).
+    pub field_count: usize,
 }
 
 /// An open Begin scope awaiting its matching End.
@@ -78,6 +80,7 @@ impl Document {
     /// in [`Document::problems`].
     pub fn parse(buf: &[u8]) -> Result<Document, ParseError> {
         let fields = sf::parse_fields(buf)?;
+        let field_count = fields.len();
         let mut problems = Vec::new();
 
         // Root children live at the bottom of the stack; each Begin pushes a frame.
@@ -148,6 +151,7 @@ impl Document {
                 children: root_children,
             },
             problems,
+            field_count,
         })
     }
 }
