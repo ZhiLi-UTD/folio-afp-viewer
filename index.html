@@ -31,6 +31,9 @@
             <button class="segmented__item" data-view="resources" role="tab">
               Resources
             </button>
+            <button class="segmented__item" data-view="render" role="tab">
+              Render
+            </button>
           </div>
           <input
             id="search"
@@ -58,7 +61,7 @@
           </div>
         </section>
 
-        <!-- Loaded document -->
+        <!-- Loaded document: inspector (structure / resources) -->
         <section id="workspace" class="workspace" hidden>
           <aside class="sidebar">
             <div id="source-list" class="source-list" role="tree" aria-label="Document"></div>
@@ -72,6 +75,27 @@
               </div>
               <div id="hex-view" class="hex__view" role="group" aria-label="Hex bytes"></div>
             </div>
+          </div>
+        </section>
+
+        <!-- Loaded document: page render -->
+        <section id="render" class="render" hidden>
+          <div class="render__bar">
+            <div class="pager">
+              <button id="page-prev" class="btn btn--icon" aria-label="Previous page">‹</button>
+              <span id="page-indicator" class="pager__label">Page 1 / 1</span>
+              <button id="page-next" class="btn btn--icon" aria-label="Next page">›</button>
+            </div>
+            <div class="zoomer">
+              <button id="zoom-fit" class="btn">Fit</button>
+              <button id="zoom-out" class="btn btn--icon" aria-label="Zoom out">−</button>
+              <span id="zoom-label" class="zoomer__label">100%</span>
+              <button id="zoom-in" class="btn btn--icon" aria-label="Zoom in">+</button>
+              <button id="export-png" class="btn">Export PNG</button>
+            </div>
+          </div>
+          <div id="render-desk" class="render__desk">
+            <canvas id="page-canvas" class="page-canvas"></canvas>
           </div>
         </section>
       </main>

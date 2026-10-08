@@ -51,6 +51,20 @@ export interface ImageDto {
   base64: string;
 }
 
+export interface TextDto {
+  x: number;
+  y: number;
+  text: string;
+}
+
+export interface PageLayoutDto {
+  pageCount: number;
+  widthLu: number;
+  heightLu: number;
+  unitsPerInch: number;
+  texts: TextDto[];
+}
+
 export function openAfp(path: string): Promise<DocumentDto> {
   return invoke<DocumentDto>("open_afp", { path });
 }
@@ -68,4 +82,11 @@ export function getResourceBytes(
   nodeIndex: number,
 ): Promise<ImageDto> {
   return invoke<ImageDto>("get_resource_bytes", { docId, nodeIndex });
+}
+
+export function getPageLayout(
+  docId: string,
+  pageIndex: number,
+): Promise<PageLayoutDto> {
+  return invoke<PageLayoutDto>("get_page_layout", { docId, pageIndex });
 }

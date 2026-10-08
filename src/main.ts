@@ -4,12 +4,14 @@ import {
   openAfp,
   getHexSlice,
   getResourceBytes,
+  getPageLayout,
   type DocumentDto,
   type NodeDto,
   type ResourceDto,
+  type PageLayoutDto,
 } from "./api";
 
-type View = "structure" | "resources";
+type View = "structure" | "resources" | "render";
 
 interface State {
   doc: DocumentDto | null;
@@ -18,6 +20,11 @@ interface State {
   selectedResource: number | null;
   query: string;
   openNodes: Set<number>;
+  // Render view
+  page: number;
+  layout: PageLayoutDto | null;
+  zoom: number; // 1 = 100%
+  fit: boolean; // when true, zoom is recomputed to fit the viewport
 }
 
 const state: State = {
@@ -27,6 +34,10 @@ const state: State = {
   selectedResource: null,
   query: "",
   openNodes: new Set(),
+  page: 0,
+  layout: null,
+  zoom: 1,
+  fit: true,
 };
 
 const MAX_HEX_BYTES = 2048;
@@ -43,6 +54,11 @@ const el = {
   segmented: byId("segmented"),
   search: byId("search") as HTMLInputElement,
   dropOverlay: byId("drop-overlay"),
+  render: byId("render"),
+  desk: byId("render-desk"),
+  canvas: byId("page-canvas") as HTMLCanvasElement,
+  pageIndicator: byId("page-indicator"),
+  zoomLabel: byId("zoom-label"),
 };
 
 function byId(id: string): HTMLElement {
@@ -69,6 +85,10 @@ async function load(path: string) {
     state.selectedResource = null;
     state.query = "";
     state.openNodes = new Set();
+    state.page = 0;
+    state.layout = null;
+    state.fit = true;
+    state.zoom = 1;
     // Auto-expand the top two levels for immediate orientation.
     autoExpand(doc.root, 0, 2);
     el.search.value = "";
@@ -99,8 +119,18 @@ function setSegment(view: View) {
   el.segmented.querySelectorAll<HTMLElement>(".segmented__item").forEach((b) => {
     b.classList.toggle("is-active", b.dataset.view === view);
   });
-  el.search.placeholder = view === "structure" ? "Search fields" : "Search resources";
-  renderSidebar();
+
+  const isRender = view === "render";
+  el.workspace.hidden = isRender;
+  el.render.hidden = !isRender;
+  el.search.style.visibility = isRender ? "hidden" : "visible";
+
+  if (isRender) {
+    void showPage(state.page);
+  } else {
+    el.search.placeholder = view === "structure" ? "Search fields" : "Search resources";
+    renderSidebar();
+  }
 }
 
 // ---- Sidebar rendering ----
@@ -367,6 +397,104 @@ async function renderHex(start: number, end: number, title: string) {
   }
 }
 
+// ---- Render view ----
+const CSS_DPI = 96; // 1 inch = 96 CSS px at 100%
+const NOMINAL_PT = 10; // substitute text size (no FOCA metrics in Phase 1/2)
+
+async function showPage(index: number) {
+  if (!state.doc) return;
+  try {
+    state.layout = await getPageLayout(state.doc.docId, index);
+    state.page = index;
+    if (state.fit) state.zoom = computeFitZoom(state.layout);
+    drawPage();
+    updateRenderChrome();
+  } catch (e) {
+    el.pageIndicator.textContent = String(e);
+  }
+}
+
+function pageSizeAtZoom(layout: PageLayoutDto, zoom: number): [number, number] {
+  const scale = (CSS_DPI * zoom) / layout.unitsPerInch;
+  return [layout.widthLu * scale, layout.heightLu * scale];
+}
+
+function computeFitZoom(layout: PageLayoutDto): number {
+  const pad = 48;
+  const availW = Math.max(100, el.desk.clientWidth - pad);
+  const availH = Math.max(100, el.desk.clientHeight - pad);
+  const [w1, h1] = pageSizeAtZoom(layout, 1);
+  return Math.max(0.1, Math.min(availW / w1, availH / h1));
+}
+
+function drawPage() {
+  const layout = state.layout;
+  if (!layout) return;
+  const [cssW, cssH] = pageSizeAtZoom(layout, state.zoom);
+  const dpr = window.devicePixelRatio || 1;
+  const canvas = el.canvas;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = `${cssW}px`;
+  canvas.style.height = `${cssH}px`;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // Page background.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  // Text runs.
+  const scale = (CSS_DPI * state.zoom) / layout.unitsPerInch;
+  const fontPx = (NOMINAL_PT / 72) * CSS_DPI * state.zoom;
+  ctx.fillStyle = "#111111";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = `${fontPx}px -apple-system, "SF Pro Text", system-ui, sans-serif`;
+  for (const t of layout.texts) {
+    ctx.fillText(t.text, t.x * scale, t.y * scale);
+  }
+}
+
+function updateRenderChrome() {
+  const count = state.layout?.pageCount ?? 1;
+  el.pageIndicator.textContent = `Page ${state.page + 1} / ${count}`;
+  el.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+}
+
+function changePage(delta: number) {
+  if (!state.layout) return;
+  const next = state.page + delta;
+  if (next < 0 || next >= state.layout.pageCount) return;
+  void showPage(next);
+}
+
+function setZoom(z: number) {
+  state.fit = false;
+  state.zoom = Math.max(0.1, Math.min(8, z));
+  drawPage();
+  updateRenderChrome();
+}
+
+function fitToViewport() {
+  if (!state.layout) return;
+  state.fit = true;
+  state.zoom = computeFitZoom(state.layout);
+  drawPage();
+  updateRenderChrome();
+}
+
+function exportPng() {
+  if (!state.doc || !state.layout) return;
+  const url = el.canvas.toDataURL("image/png");
+  const a = document.createElement("a");
+  const base = state.doc.fileName.replace(/\.[^.]+$/, "");
+  a.href = url;
+  a.download = `${base}-page${state.page + 1}.png`;
+  a.click();
+}
+
 // ---- Small DOM / format helpers ----
 function h(tag: string, cls: string, text: string): HTMLElement {
   const n = document.createElement(tag);
@@ -427,6 +555,22 @@ window.addEventListener("DOMContentLoaded", () => {
   el.search.addEventListener("input", () => {
     state.query = el.search.value;
     renderSidebar();
+  });
+
+  // Render controls.
+  byId("page-prev").addEventListener("click", () => changePage(-1));
+  byId("page-next").addEventListener("click", () => changePage(1));
+  byId("zoom-fit").addEventListener("click", fitToViewport);
+  byId("zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.25));
+  byId("zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.25));
+  byId("export-png").addEventListener("click", exportPng);
+  window.addEventListener("keydown", (e) => {
+    if (state.view !== "render") return;
+    if (e.key === "ArrowLeft") changePage(-1);
+    else if (e.key === "ArrowRight") changePage(1);
+  });
+  window.addEventListener("resize", () => {
+    if (state.view === "render" && state.fit) fitToViewport();
   });
 
   // Native file drag-and-drop.
