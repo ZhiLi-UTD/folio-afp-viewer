@@ -7,6 +7,7 @@
 //! Modules are added task-by-task per the Phase 1 plan.
 
 pub mod build;
+pub mod ioca;
 pub mod names;
 pub mod resource;
 pub mod sf;
@@ -14,6 +15,7 @@ pub mod summary;
 pub mod tree;
 pub mod triplet;
 
+pub use ioca::{ExtractedImage, ImageFormat};
 pub use resource::{Resource, ResourceKind};
 pub use summary::Summary;
 pub use tree::{Document, Node, Problem};
