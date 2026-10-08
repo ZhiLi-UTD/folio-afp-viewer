@@ -10,5 +10,6 @@ pub mod build;
 pub mod names;
 pub mod sf;
 pub mod tree;
+pub mod triplet;
 
 pub use tree::{Document, Node, Problem};
