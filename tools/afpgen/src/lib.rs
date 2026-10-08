@@ -24,7 +24,7 @@ const BIM: [u8; 3] = [0xD3, 0xA8, 0xFB];
 const EIM: [u8; 3] = [0xD3, 0xA9, 0xFB];
 const IPD: [u8; 3] = [0xD3, 0xEE, 0xFB];
 
-/// Encode an EBCDIC resource name (A-Z, 0-9) for a Fully Qualified Name triplet.
+/// Encode EBCDIC (A-Z, 0-9, space) for names and text. Other bytes become space.
 fn ebcdic(name: &str) -> Vec<u8> {
     name.bytes()
         .map(|b| match b {
@@ -37,6 +37,31 @@ fn ebcdic(name: &str) -> Vec<u8> {
         .collect()
 }
 
+/// A Page Descriptor: 1440 L-units/inch, US Letter (8.5in x 11in).
+/// XpUnitBase, YpUnitBase (0x00 = 10in), XpUnits, YpUnits (14400 per 10in =
+/// 1440/in), XpgSize (12240 = 8.5in), YpgSize (15840 = 11in).
+const PGD_LETTER: [u8; 12] = [
+    0x00, 0x00, 0x38, 0x40, 0x38, 0x40, 0x00, 0x2F, 0xD0, 0x00, 0x3D, 0xE0,
+];
+
+/// One PTOCA control sequence (chained): `[length][type|1][params]`.
+fn cs(base_type: u8, params: &[u8]) -> Vec<u8> {
+    let mut v = vec![(2 + params.len()) as u8, base_type | 1];
+    v.extend_from_slice(params);
+    v
+}
+
+/// Build PTOCA text data placing each `(x, y, text)` line (coords in L-units).
+fn ptoca(lines: &[(u16, u16, &str)]) -> Vec<u8> {
+    let mut d = vec![0x2B, 0xD3];
+    for (x, y, text) in lines {
+        d.extend(cs(0xD2, &y.to_be_bytes())); // AMB: baseline y
+        d.extend(cs(0xC6, &x.to_be_bytes())); // AMI: inline x
+        d.extend(cs(0xDA, &ebcdic(text))); // TRN: the characters
+    }
+    d
+}
+
 /// Build a Fully Qualified Name triplet (id 0x02) carrying `name`.
 fn fqn_triplet(name: &str) -> Vec<u8> {
     let encoded = ebcdic(name);
@@ -45,13 +70,16 @@ fn fqn_triplet(name: &str) -> Vec<u8> {
     t
 }
 
-/// A simple one-page document with a page descriptor and a line of text.
+/// A simple one-page document with a page descriptor and two lines of text.
 pub fn simple() -> Vec<u8> {
     StreamBuilder::new()
         .begin(BDT)
         .begin(BPG)
-        .other(PGD, &[0x00, 0x00, 0x2E, 0xE0, 0x00, 0x00, 0x21, 0x60])
-        .other(PTX, b"\x2b\xd3\x04Hello, AFP")
+        .other(PGD, &PGD_LETTER)
+        .other(
+            PTX,
+            &ptoca(&[(1440, 1440, "HELLO AFP"), (1440, 2160, "FOLIO VIEWER")]),
+        )
         .end(EPG)
         .end(EDT)
         .build()
@@ -61,10 +89,11 @@ pub fn simple() -> Vec<u8> {
 pub fn multi_page() -> Vec<u8> {
     let mut b = StreamBuilder::new().begin(BDT);
     for i in 1..=3u8 {
+        let label = format!("PAGE {i}");
         b = b
             .begin(BPG)
-            .other(PGD, &[0x00, 0x00, 0x2E, 0xE0, 0x00, 0x00, 0x21, 0x60])
-            .other(PTX, &[0x2b, 0xd3, 0x02, b'P', b'0' + i]);
+            .other(PGD, &PGD_LETTER)
+            .other(PTX, &ptoca(&[(1440, 1440, &label), (1440, 2880, "STATEMENT")]));
         b = b.end(EPG);
     }
     b.end(EDT).build()
@@ -83,7 +112,8 @@ pub fn with_image() -> Vec<u8> {
         .end(ER)
         .end(ERG)
         .begin(BPG)
-        .other(PTX, b"\x2b\xd3\x05Image")
+        .other(PGD, &PGD_LETTER)
+        .other(PTX, &ptoca(&[(1440, 1440, "IMAGE PAGE")]))
         .end(EPG)
         .end(EDT)
         .build()

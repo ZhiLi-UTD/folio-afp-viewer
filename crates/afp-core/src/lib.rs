@@ -9,6 +9,7 @@
 pub mod build;
 pub mod ioca;
 pub mod names;
+pub mod page;
 pub mod ptoca;
 pub mod resource;
 pub mod sf;
@@ -17,6 +18,7 @@ pub mod tree;
 pub mod triplet;
 
 pub use ioca::{ExtractedImage, ImageFormat};
+pub use page::{PageLayout, PositionedText};
 pub use resource::{Resource, ResourceKind};
 pub use summary::Summary;
 pub use tree::{Document, Node, Problem};
