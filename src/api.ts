@@ -57,12 +57,22 @@ export interface TextDto {
   text: string;
 }
 
+export interface PlacedImageDto {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  nodeIndex: number;
+}
+
 export interface PageLayoutDto {
   pageCount: number;
   widthLu: number;
   heightLu: number;
   unitsPerInch: number;
+  fontSizeLu: number;
   texts: TextDto[];
+  images: PlacedImageDto[];
 }
 
 export function openAfp(path: string): Promise<DocumentDto> {

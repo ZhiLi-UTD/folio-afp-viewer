@@ -186,12 +186,24 @@ pub struct TextDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ImageDtoPlaced {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub node_index: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PageLayoutDto {
     pub page_count: usize,
     pub width_lu: i32,
     pub height_lu: i32,
     pub units_per_inch: f32,
+    pub font_size_lu: i32,
     pub texts: Vec<TextDto>,
+    pub images: Vec<ImageDtoPlaced>,
 }
 
 pub fn page_layout_dto(layout: &PageLayout, page_count: usize) -> PageLayoutDto {
@@ -200,6 +212,7 @@ pub fn page_layout_dto(layout: &PageLayout, page_count: usize) -> PageLayoutDto 
         width_lu: layout.width_lu,
         height_lu: layout.height_lu,
         units_per_inch: layout.units_per_inch,
+        font_size_lu: layout.font_size_lu,
         texts: layout
             .texts
             .iter()
@@ -207,6 +220,17 @@ pub fn page_layout_dto(layout: &PageLayout, page_count: usize) -> PageLayoutDto 
                 x: t.x,
                 y: t.y,
                 text: t.text.clone(),
+            })
+            .collect(),
+        images: layout
+            .images
+            .iter()
+            .map(|i| ImageDtoPlaced {
+                x: i.x,
+                y: i.y,
+                w: i.w,
+                h: i.h,
+                node_index: i.node_index,
             })
             .collect(),
     }

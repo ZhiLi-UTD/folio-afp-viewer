@@ -399,19 +399,42 @@ async function renderHex(start: number, end: number, title: string) {
 
 // ---- Render view ----
 const CSS_DPI = 96; // 1 inch = 96 CSS px at 100%
-const NOMINAL_PT = 10; // substitute text size (no FOCA metrics in Phase 1/2)
+
+// Decoded on-page images for the current page, keyed by node index.
+const pageImages = new Map<number, HTMLImageElement>();
 
 async function showPage(index: number) {
   if (!state.doc) return;
   try {
-    state.layout = await getPageLayout(state.doc.docId, index);
+    const layout = await getPageLayout(state.doc.docId, index);
+    state.layout = layout;
     state.page = index;
-    if (state.fit) state.zoom = computeFitZoom(state.layout);
+    await loadPageImages(layout);
+    if (state.fit) state.zoom = computeFitZoom(layout);
     drawPage();
     updateRenderChrome();
   } catch (e) {
     el.pageIndicator.textContent = String(e);
   }
+}
+
+/** Fetch and decode every on-page image into `pageImages` before drawing. */
+async function loadPageImages(layout: PageLayoutDto) {
+  pageImages.clear();
+  if (!state.doc || layout.images.length === 0) return;
+  await Promise.all(
+    layout.images.map(async (img) => {
+      const data = await getResourceBytes(state.doc!.docId, img.nodeIndex);
+      if (data.format !== "jpeg" || !data.base64) return;
+      const el = new Image();
+      await new Promise<void>((resolve) => {
+        el.onload = () => resolve();
+        el.onerror = () => resolve();
+        el.src = `data:image/jpeg;base64,${data.base64}`;
+      });
+      pageImages.set(img.nodeIndex, el);
+    }),
+  );
 }
 
 function pageSizeAtZoom(layout: PageLayoutDto, zoom: number): [number, number] {
@@ -446,9 +469,18 @@ function drawPage() {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, cssW, cssH);
 
-  // Text runs.
   const scale = (CSS_DPI * state.zoom) / layout.unitsPerInch;
-  const fontPx = (NOMINAL_PT / 72) * CSS_DPI * state.zoom;
+
+  // Images first, so text can sit on top.
+  for (const img of layout.images) {
+    const el = pageImages.get(img.nodeIndex);
+    if (el) {
+      ctx.drawImage(el, img.x * scale, img.y * scale, img.w * scale, img.h * scale);
+    }
+  }
+
+  // Text runs, sized from the page's estimated text height.
+  const fontPx = (layout.fontSizeLu / layout.unitsPerInch) * CSS_DPI * state.zoom;
   ctx.fillStyle = "#111111";
   ctx.textBaseline = "alphabetic";
   ctx.font = `${fontPx}px -apple-system, "SF Pro Text", system-ui, sans-serif`;

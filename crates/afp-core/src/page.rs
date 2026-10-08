@@ -16,18 +16,35 @@ pub struct PositionedText {
     pub text: String,
 }
 
+/// An image placed on the page, in page coordinates (L-units). `node_index`
+/// resolves to the image object so the front-end can fetch its bytes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PositionedImage {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub node_index: usize,
+}
+
 /// A page ready to render.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PageLayout {
     pub width_lu: i32,
     pub height_lu: i32,
     pub units_per_inch: f32,
+    /// Estimated text height in L-units (from line spacing; no FOCA metrics yet).
+    pub font_size_lu: i32,
     pub texts: Vec<PositionedText>,
+    pub images: Vec<PositionedImage>,
 }
 
 const PAGE_CAT: u8 = 0xAF; // Begin Page category
+const IMAGE_CAT: u8 = 0xFB; // Begin Image Object category
 const PGD: [u8; 3] = [0xD3, 0xA6, 0xAF]; // Page Descriptor
 const PTX: [u8; 3] = [0xD3, 0xEE, 0x9B]; // Presentation Text
+const OBP: [u8; 3] = [0xD3, 0xAC, 0x6B]; // Object Area Position
+const OBD: [u8; 3] = [0xD3, 0xA6, 0x6B]; // Object Area Descriptor
 
 // US Letter at 1440 L-units/inch — the fallback geometry.
 const DEFAULT_WIDTH_LU: i32 = 12240;
@@ -53,12 +70,38 @@ impl Document {
         let mut texts = Vec::new();
         collect_text(page, buf, &mut texts);
 
+        let mut images = Vec::new();
+        collect_images(page, buf, &mut images);
+
+        let font_size_lu = estimate_font_size(&texts, units_per_inch);
+
         Some(PageLayout {
             width_lu,
             height_lu,
             units_per_inch,
+            font_size_lu,
             texts,
+            images,
         })
+    }
+}
+
+/// Estimate text height from the smallest positive gap between successive text
+/// baselines (line pitch ≈ 1.2 × text height). Falls back to 10pt-equivalent.
+fn estimate_font_size(texts: &[PositionedText], upi: f32) -> i32 {
+    let mut ys: Vec<i32> = texts.iter().map(|t| t.y).collect();
+    ys.sort_unstable();
+    ys.dedup();
+    let min_gap = ys.windows(2).map(|w| w[1] - w[0]).filter(|&g| g > 0).min();
+    match min_gap {
+        Some(gap) => {
+            let size = (gap as f32 / 1.2) as i32;
+            // Clamp to a sane 6pt–18pt range in L-units.
+            let lo = (6.0 / 72.0 * upi) as i32;
+            let hi = (18.0 / 72.0 * upi) as i32;
+            size.clamp(lo, hi)
+        }
+        None => (10.0 / 72.0 * upi) as i32,
     }
 }
 
@@ -82,6 +125,66 @@ fn collect_pages<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
 
 fn is_page(node: &Node) -> bool {
     names::classify(node.sfid) == Kind::Begin && names::category(node.sfid) == PAGE_CAT
+}
+
+fn is_image(node: &Node) -> bool {
+    names::classify(node.sfid) == Kind::Begin && names::category(node.sfid) == IMAGE_CAT
+}
+
+/// Collect image objects placed directly on the page, with position/size taken
+/// from their Object Area Position (OBP) and Object Area Descriptor (OBD).
+///
+/// This parses a pragmatic subset of OBP/OBD sufficient to place an image;
+/// full object-area coordinate systems are future work. An image with no
+/// position defaults to the page origin; no size defaults to a quarter page.
+fn collect_images(node: &Node, buf: &[u8], out: &mut Vec<PositionedImage>) {
+    for child in &node.children {
+        if is_image(child) {
+            let (x, y) = image_position(child, buf);
+            let (w, h) = image_size(child, buf);
+            out.push(PositionedImage {
+                x,
+                y,
+                w,
+                h,
+                node_index: child.index,
+            });
+        } else {
+            // Images nest inside page/resource groups, not inside each other.
+            collect_images(child, buf, out);
+        }
+    }
+}
+
+/// X/Y origin from the OBP (Object Area Position): `[id][X(3)][Y(3)]`.
+fn image_position(img: &Node, buf: &[u8]) -> (i32, i32) {
+    if let Some(obp) = find_first(img, OBP) {
+        let d = slice(buf, obp);
+        if d.len() >= 7 {
+            return (be_u24(&d[1..4]), be_u24(&d[4..7]));
+        }
+    }
+    (0, 0)
+}
+
+/// Width/height from the OBD (Object Area Descriptor), PGD-like:
+/// `[xbase][ybase][xunits(2)][yunits(2)][xsize(3)][ysize(3)]`.
+fn image_size(img: &Node, buf: &[u8]) -> (i32, i32) {
+    if let Some(obd) = find_first(img, OBD) {
+        let d = slice(buf, obd);
+        if d.len() >= 12 {
+            let w = be_u24(&d[6..9]);
+            let h = be_u24(&d[9..12]);
+            if w > 0 && h > 0 {
+                return (w, h);
+            }
+        }
+    }
+    (DEFAULT_WIDTH_LU / 2, DEFAULT_HEIGHT_LU / 4)
+}
+
+fn slice<'a>(buf: &'a [u8], node: &Node) -> &'a [u8] {
+    &buf[node.data_range.start.min(buf.len())..node.data_range.end.min(buf.len())]
 }
 
 /// Read geometry from the page's Page Descriptor, or fall back to US Letter.
@@ -161,6 +264,28 @@ mod tests {
         assert_eq!(layout.units_per_inch, 1440.0);
         assert_eq!(layout.texts.len(), 2);
         assert_eq!(layout.texts[0], PositionedText { x: 1440, y: 1440, text: "HELLO AFP".into() });
+    }
+
+    #[test]
+    fn page_image_is_positioned_and_sized() {
+        let bytes = afpgen::with_page_image();
+        let doc = Document::parse(&bytes).unwrap();
+        let layout = doc.page_layout(0, &bytes).unwrap();
+        assert_eq!(layout.images.len(), 1);
+        let img = &layout.images[0];
+        assert_eq!((img.x, img.y), (1440, 2880));
+        assert_eq!((img.w, img.h), (4320, 2880));
+    }
+
+    #[test]
+    fn font_size_tracks_line_spacing() {
+        // simple() places lines 720 L-units apart -> ~600 L-units text height,
+        // clamped to the 18pt max (450 at 1440 upi).
+        let bytes = afpgen::simple();
+        let doc = Document::parse(&bytes).unwrap();
+        let layout = doc.page_layout(0, &bytes).unwrap();
+        let max_18pt = (18.0 / 72.0 * 1440.0) as i32;
+        assert_eq!(layout.font_size_lu, max_18pt);
     }
 
     #[test]

@@ -23,6 +23,8 @@ const ER: [u8; 3] = [0xD3, 0xA9, 0xCE];
 const BIM: [u8; 3] = [0xD3, 0xA8, 0xFB];
 const EIM: [u8; 3] = [0xD3, 0xA9, 0xFB];
 const IPD: [u8; 3] = [0xD3, 0xEE, 0xFB];
+const OBP: [u8; 3] = [0xD3, 0xAC, 0x6B]; // Object Area Position
+const OBD: [u8; 3] = [0xD3, 0xA6, 0x6B]; // Object Area Descriptor
 
 /// Encode EBCDIC (A-Z, 0-9, space) for names and text. Other bytes become space.
 fn ebcdic(name: &str) -> Vec<u8> {
@@ -119,6 +121,45 @@ pub fn with_image() -> Vec<u8> {
         .build()
 }
 
+/// 3-byte big-endian encoding.
+fn u24(v: u32) -> [u8; 3] {
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+}
+
+/// Object Area Position data: `[id][X(3)][Y(3)]`.
+fn obp(x: u32, y: u32) -> Vec<u8> {
+    let mut d = vec![0x00];
+    d.extend_from_slice(&u24(x));
+    d.extend_from_slice(&u24(y));
+    d
+}
+
+/// Object Area Descriptor data (PGD-like): units + `[Xsize(3)][Ysize(3)]`.
+fn obd(w: u32, h: u32) -> Vec<u8> {
+    let mut d = vec![0x00, 0x00, 0x38, 0x40, 0x38, 0x40];
+    d.extend_from_slice(&u24(w));
+    d.extend_from_slice(&u24(h));
+    d
+}
+
+/// A one-page document with a JPEG image placed on the page via OBP/OBD, plus
+/// a caption line. Exercises on-page image rendering.
+pub fn with_page_image() -> Vec<u8> {
+    StreamBuilder::new()
+        .begin(BDT)
+        .begin(BPG)
+        .other(PGD, &PGD_LETTER)
+        .other(PTX, &ptoca(&[(1440, 1440, "FIGURE 1")]))
+        .begin(BIM)
+        .other(OBP, &obp(1440, 2880)) // 1in, 2in
+        .other(OBD, &obd(4320, 2880)) // 3in x 2in
+        .other(IPD, sample_jpeg::SAMPLE_JPEG)
+        .end(EIM)
+        .end(EPG)
+        .end(EDT)
+        .build()
+}
+
 /// Like [`with_image`] but the JPEG is split across several Image Picture Data
 /// records, mirroring how real IOCA images exceed the single-record size limit.
 pub fn with_image_split() -> Vec<u8> {
@@ -153,6 +194,7 @@ pub fn all_fixtures() -> Vec<(&'static str, Vec<u8>)> {
         ("multi-page.afp", multi_page()),
         ("with-image.afp", with_image()),
         ("with-image-split.afp", with_image_split()),
+        ("with-page-image.afp", with_page_image()),
         ("malformed.afp", malformed()),
     ]
 }
