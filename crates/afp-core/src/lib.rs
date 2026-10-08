@@ -5,3 +5,5 @@
 //! enumeration, and IOCA image extraction. See `docs/plans/`.
 //!
 //! Modules are added task-by-task per the Phase 1 plan.
+
+pub mod sf;
