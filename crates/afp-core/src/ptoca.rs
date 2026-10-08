@@ -1,0 +1,161 @@
+//! Decode PTOCA presentation-text control sequences into positioned text runs.
+//!
+//! PTX field data is a chain of control sequences. The data opens with the
+//! introducer `0x2B 0xD3`; thereafter each control sequence is
+//! `[length][type][parameters]`, where `length` counts itself through the
+//! parameters. The control-sequence type's low bit is the chaining flag, so we
+//! mask it off before matching. We track the current inline (x) and baseline
+//! (y) position and emit a [`TextRun`] for each Transparent Data sequence.
+
+use crate::resource::decode_ebcdic;
+
+/// A run of text positioned at (x, y) in L-units, top-left origin.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TextRun {
+    pub x: i32,
+    pub y: i32,
+    pub text: String,
+}
+
+// Control-sequence base type codes (low/chaining bit masked off).
+const AMI: u8 = 0xC6; // Absolute Move Inline  -> set x
+const RMI: u8 = 0xC8; // Relative Move Inline  -> add x
+const AMB: u8 = 0xD2; // Absolute Move Baseline-> set y
+const RMB: u8 = 0xD4; // Relative Move Baseline-> add y
+const TRN: u8 = 0xDA; // Transparent Data      -> text
+
+/// Nominal per-character inline advance (L-units) used only to separate
+/// consecutive Transparent Data runs that are not divided by an explicit move.
+const NOMINAL_ADVANCE: i32 = 144;
+
+/// Decode PTOCA text data into absolutely-positioned runs.
+pub fn parse_text(data: &[u8]) -> Vec<TextRun> {
+    let mut runs = Vec::new();
+    let mut pos = 0usize;
+    // Skip the control-sequence introducer if present.
+    if data.len() >= 2 && data[0] == 0x2B && data[1] == 0xD3 {
+        pos = 2;
+    }
+    let (mut x, mut y) = (0i32, 0i32);
+    while pos < data.len() {
+        let len = data[pos] as usize;
+        if len < 2 || pos + len > data.len() {
+            break;
+        }
+        let ty = data[pos + 1] & 0xFE; // mask chaining bit
+        let params = &data[pos + 2..pos + len];
+        match ty {
+            AMI => {
+                if let Some(v) = be_u16(params) {
+                    x = v;
+                }
+            }
+            RMI => {
+                if let Some(v) = be_u16(params) {
+                    x += v;
+                }
+            }
+            AMB => {
+                if let Some(v) = be_u16(params) {
+                    y = v;
+                }
+            }
+            RMB => {
+                if let Some(v) = be_u16(params) {
+                    y += v;
+                }
+            }
+            TRN => {
+                let text = decode_ebcdic(params);
+                let advance = text.chars().count() as i32 * NOMINAL_ADVANCE;
+                runs.push(TextRun {
+                    x,
+                    y,
+                    text,
+                });
+                x += advance;
+            }
+            _ => {} // unknown control sequence: skip by its length
+        }
+        pos += len;
+    }
+    runs
+}
+
+/// First two bytes of `p` as a big-endian unsigned value widened to i32.
+fn be_u16(p: &[u8]) -> Option<i32> {
+    if p.len() >= 2 {
+        Some(u16::from_be_bytes([p[0], p[1]]) as i32)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EBCDIC-encode an uppercase/digit ASCII string (test helper).
+    fn ebcdic(s: &str) -> Vec<u8> {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'I' => 0xC1 + (b - b'A'),
+                b'J'..=b'R' => 0xD1 + (b - b'J'),
+                b'S'..=b'Z' => 0xE2 + (b - b'S'),
+                b'0'..=b'9' => 0xF0 + (b - b'0'),
+                b' ' => 0x40,
+                _ => 0x40,
+            })
+            .collect()
+    }
+
+    fn cs(ty: u8, params: &[u8]) -> Vec<u8> {
+        let mut v = vec![(2 + params.len()) as u8, ty];
+        v.extend_from_slice(params);
+        v
+    }
+
+    #[test]
+    fn decodes_positioned_text() {
+        let mut data = vec![0x2B, 0xD3];
+        data.extend(cs(AMB | 1, &300i32.to_be_bytes()[2..])); // y=300
+        data.extend(cs(AMI | 1, &120i32.to_be_bytes()[2..])); // x=120
+        data.extend(cs(TRN | 1, &ebcdic("HI"))); // text
+        let runs = parse_text(&data);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0], TextRun { x: 120, y: 300, text: "HI".into() });
+    }
+
+    #[test]
+    fn relative_move_adds_to_inline() {
+        let mut data = vec![0x2B, 0xD3];
+        data.extend(cs(AMI, &100u16.to_be_bytes())); // x=100
+        data.extend(cs(RMI, &50u16.to_be_bytes())); // x=150
+        data.extend(cs(TRN, &ebcdic("A")));
+        let runs = parse_text(&data);
+        assert_eq!(runs[0].x, 150);
+    }
+
+    #[test]
+    fn two_runs_without_move_do_not_overlap() {
+        let mut data = vec![0x2B, 0xD3];
+        data.extend(cs(AMI, &0u16.to_be_bytes()));
+        data.extend(cs(TRN, &ebcdic("AB")));
+        data.extend(cs(TRN, &ebcdic("CD")));
+        let runs = parse_text(&data);
+        assert_eq!(runs.len(), 2);
+        assert!(runs[1].x > runs[0].x);
+    }
+
+    #[test]
+    fn stops_on_truncated_sequence_without_panic() {
+        let data = vec![0x2B, 0xD3, 0x05, TRN]; // claims len 5, only 2 bytes follow
+        assert!(parse_text(&data).is_empty());
+    }
+
+    #[test]
+    fn empty_data_is_no_runs() {
+        assert!(parse_text(&[]).is_empty());
+        assert!(parse_text(&[0x2B, 0xD3]).is_empty());
+    }
+}
