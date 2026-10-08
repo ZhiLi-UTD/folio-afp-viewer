@@ -73,17 +73,64 @@ fn push_data(node: &Node, buf: &[u8], out: &mut Vec<u8>) {
     }
 }
 
-/// Find a complete JPEG (SOI `FF D8 FF` .. EOI `FF D9`) within `data`.
+/// Find a complete JPEG within `data` by walking its marker segments from SOI
+/// (`FF D8`) to the matching EOI (`FF D9`). Parsing segment lengths — and
+/// scanning entropy-coded data past stuffed `FF 00` and restart markers — means
+/// an `FF D9` byte embedded inside compressed data is not mistaken for the end.
+/// Fully bounds-checked; returns `None` on malformed input rather than panicking.
 fn find_jpeg(data: &[u8]) -> Option<&[u8]> {
-    let soi = data
-        .windows(3)
-        .position(|w| w == [0xFF, 0xD8, 0xFF])?;
-    // EOI after the SOI.
-    let eoi_rel = data[soi + 2..]
-        .windows(2)
-        .position(|w| w == [0xFF, 0xD9])?;
-    let end = soi + 2 + eoi_rel + 2; // inclusive of FF D9
-    Some(&data[soi..end])
+    let soi = data.windows(2).position(|w| w == [0xFF, 0xD8])?;
+    let mut i = soi + 2;
+    while i + 1 < data.len() {
+        if data[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        // Collapse fill bytes (runs of 0xFF) before the marker code.
+        let mut m = i + 1;
+        while m < data.len() && data[m] == 0xFF {
+            m += 1;
+        }
+        if m >= data.len() {
+            break;
+        }
+        let marker = data[m];
+        let after = m + 1;
+        match marker {
+            0xD9 => return Some(&data[soi..after]), // EOI
+            // Standalone markers (TEM, restart) carry no length.
+            0x01 | 0xD0..=0xD7 => i = after,
+            0xDA => {
+                // Start of Scan: skip its header, then scan entropy data for the
+                // next real marker (FF followed by non-0x00, non-restart).
+                let len = seg_len(data, after)?;
+                let mut j = after + len;
+                while j + 1 < data.len() {
+                    if data[j] == 0xFF {
+                        let n = data[j + 1];
+                        if n != 0x00 && !(0xD0..=0xD7).contains(&n) {
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                i = j;
+            }
+            // All other markers carry a 2-byte segment length.
+            _ => i = after + seg_len(data, after)?,
+        }
+    }
+    None
+}
+
+/// Length of a marker segment whose 2-byte big-endian length starts at `at`
+/// (the length counts itself). Returns `None` if out of bounds.
+fn seg_len(data: &[u8], at: usize) -> Option<usize> {
+    if at + 1 < data.len() {
+        Some((u16::from_be_bytes([data[at], data[at + 1]]) as usize).max(2))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -128,5 +175,19 @@ mod tests {
         // A truncated JPEG (SOI present, no EOI) must not be returned as valid.
         let data = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
         assert!(find_jpeg(&data).is_none());
+    }
+
+    #[test]
+    fn embedded_ff_d9_in_segment_is_not_mistaken_for_eoi() {
+        // APP0 payload contains FF D9; the real EOI is after the scan data.
+        let data = [
+            0xFF, 0xD8, // SOI
+            0xFF, 0xE0, 0x00, 0x06, 0xAA, 0xFF, 0xD9, 0xBB, // APP0 w/ embedded FF D9
+            0xFF, 0xDA, 0x00, 0x03, 0x00, // SOS header
+            0x11, 0x22, // entropy
+            0xFF, 0xD9, // real EOI
+        ];
+        let jpeg = find_jpeg(&data).expect("should find full jpeg");
+        assert_eq!(jpeg.len(), data.len()); // full image, not truncated at embedded FF D9
     }
 }

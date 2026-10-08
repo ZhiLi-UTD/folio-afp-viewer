@@ -64,7 +64,7 @@ pub fn parse_into(data: &[u8], x: &mut i32, y: &mut i32, runs: &mut Vec<TextRun>
             }
             RMI => {
                 if let Some(v) = be_i16(params) {
-                    *x += v;
+                    *x = x.saturating_add(v);
                 }
             }
             AMB => {
@@ -74,14 +74,14 @@ pub fn parse_into(data: &[u8], x: &mut i32, y: &mut i32, runs: &mut Vec<TextRun>
             }
             RMB => {
                 if let Some(v) = be_i16(params) {
-                    *y += v;
+                    *y = y.saturating_add(v);
                 }
             }
             TRN => {
                 let text = decode_ebcdic(params);
-                let advance = text.chars().count() as i32 * NOMINAL_ADVANCE;
+                let advance = (text.chars().count() as i32).saturating_mul(NOMINAL_ADVANCE);
                 runs.push(TextRun { x: *x, y: *y, text });
-                *x += advance;
+                *x = x.saturating_add(advance);
             }
             _ => {} // unknown control sequence: skip by its length
         }

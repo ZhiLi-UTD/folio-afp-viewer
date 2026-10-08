@@ -403,28 +403,45 @@ const CSS_DPI = 96; // 1 inch = 96 CSS px at 100%
 // Decoded on-page images for the current page, keyed by node index.
 const pageImages = new Map<number, HTMLImageElement>();
 
+// Monotonic token so a slow page/image fetch superseded by newer navigation
+// (or a new document) is discarded instead of overwriting the current page.
+let pageToken = 0;
+
 async function showPage(index: number) {
   if (!state.doc) return;
+  const token = ++pageToken;
+  const docId = state.doc.docId;
   try {
-    const layout = await getPageLayout(state.doc.docId, index);
+    const layout = await getPageLayout(docId, index);
+    if (token !== pageToken) return; // superseded
     state.layout = layout;
     state.page = index;
-    await loadPageImages(layout);
+    await loadPageImages(layout, docId, token);
+    if (token !== pageToken) return; // superseded during image load
     if (state.fit) state.zoom = computeFitZoom(layout);
     drawPage();
     updateRenderChrome();
   } catch (e) {
-    el.pageIndicator.textContent = String(e);
+    if (token === pageToken) {
+      clearCanvas();
+      el.pageIndicator.textContent = String(e);
+    }
   }
 }
 
+function clearCanvas() {
+  const ctx = el.canvas.getContext("2d");
+  if (ctx) ctx.clearRect(0, 0, el.canvas.width, el.canvas.height);
+}
+
 /** Fetch and decode every on-page image into `pageImages` before drawing. */
-async function loadPageImages(layout: PageLayoutDto) {
+async function loadPageImages(layout: PageLayoutDto, docId: string, token: number) {
   pageImages.clear();
-  if (!state.doc || layout.images.length === 0) return;
+  if (layout.images.length === 0) return;
   await Promise.all(
     layout.images.map(async (img) => {
-      const data = await getResourceBytes(state.doc!.docId, img.nodeIndex);
+      const data = await getResourceBytes(docId, img.nodeIndex);
+      if (token !== pageToken) return; // superseded
       if (data.format !== "jpeg" || !data.base64) return;
       const el = new Image();
       // Only cache images that actually decode; a broken image would make
