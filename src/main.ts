@@ -517,12 +517,14 @@ function drawPage() {
     }
   }
 
-  // Text runs, sized from the page's estimated text height.
-  const fontPx = (layout.fontSizeLu / layout.unitsPerInch) * CSS_DPI * state.zoom;
+  // Text runs, each sized by its own font (FOCA/MCF point size when known,
+  // else the page's line-spacing estimate).
+  const luToPx = (CSS_DPI * state.zoom) / layout.unitsPerInch;
   ctx.fillStyle = "#111111";
   ctx.textBaseline = "alphabetic";
-  ctx.font = `${fontPx}px -apple-system, "SF Pro Text", system-ui, sans-serif`;
   for (const t of layout.texts) {
+    const sizeLu = t.fontSizeLu > 0 ? t.fontSizeLu : layout.fontSizeLu;
+    ctx.font = `${sizeLu * luToPx}px -apple-system, "SF Pro Text", system-ui, sans-serif`;
     ctx.fillText(t.text, t.x * scale, t.y * scale);
   }
 }

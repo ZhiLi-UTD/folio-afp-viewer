@@ -15,31 +15,44 @@ pub struct TextRun {
     pub x: i32,
     pub y: i32,
     pub text: String,
+    /// Local font id selected (SCFL) when this run was emitted, if any.
+    pub font_id: Option<u8>,
+}
+
+/// Mutable PTOCA decoding state: inline/baseline position and active font.
+/// Threaded across PTX records so a presentation-text object split over several
+/// records keeps its position and font selection.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Cursor {
+    pub x: i32,
+    pub y: i32,
+    pub font_id: Option<u8>,
 }
 
 // Control-sequence base type codes (low/chaining bit masked off).
-const AMI: u8 = 0xC6; // Absolute Move Inline  -> set x
-const RMI: u8 = 0xC8; // Relative Move Inline  -> add x
-const AMB: u8 = 0xD2; // Absolute Move Baseline-> set y
-const RMB: u8 = 0xD4; // Relative Move Baseline-> add y
-const TRN: u8 = 0xDA; // Transparent Data      -> text
+const AMI: u8 = 0xC6; // Absolute Move Inline   -> set x
+const RMI: u8 = 0xC8; // Relative Move Inline   -> add x
+const AMB: u8 = 0xD2; // Absolute Move Baseline -> set y
+const RMB: u8 = 0xD4; // Relative Move Baseline -> add y
+const TRN: u8 = 0xDA; // Transparent Data       -> text
+const SCFL: u8 = 0xF0; // Set Coded Font Local  -> select font
 
 /// Nominal per-character inline advance (L-units) used only to separate
 /// consecutive Transparent Data runs that are not divided by an explicit move.
 const NOMINAL_ADVANCE: i32 = 144;
 
-/// Decode PTOCA text data into absolutely-positioned runs (fresh position).
+/// Decode PTOCA text data into absolutely-positioned runs (fresh state).
 pub fn parse_text(data: &[u8]) -> Vec<TextRun> {
     let mut runs = Vec::new();
-    let (mut x, mut y) = (0i32, 0i32);
-    parse_into(data, &mut x, &mut y, &mut runs);
+    let mut cur = Cursor::default();
+    parse_into(data, &mut cur, &mut runs);
     runs
 }
 
-/// Decode PTOCA text data, threading the inline/baseline cursor through `x`/`y`
-/// so a presentation-text object split across several PTX records keeps its
-/// position. Appends runs to `runs`.
-pub fn parse_into(data: &[u8], x: &mut i32, y: &mut i32, runs: &mut Vec<TextRun>) {
+/// Decode PTOCA text data, threading decoding state through `cur` so a
+/// presentation-text object split across several PTX records keeps its position
+/// and font selection. Appends runs to `runs`.
+pub fn parse_into(data: &[u8], cur: &mut Cursor, runs: &mut Vec<TextRun>) {
     let mut pos = 0usize;
     while pos < data.len() {
         // A new (unchained) control sequence is preceded by the 0x2B 0xD3
@@ -59,29 +72,40 @@ pub fn parse_into(data: &[u8], x: &mut i32, y: &mut i32, runs: &mut Vec<TextRun>
         match ty {
             AMI => {
                 if let Some(v) = be_u16(params) {
-                    *x = v;
+                    cur.x = v;
                 }
             }
             RMI => {
                 if let Some(v) = be_i16(params) {
-                    *x = x.saturating_add(v);
+                    cur.x = cur.x.saturating_add(v);
                 }
             }
             AMB => {
                 if let Some(v) = be_u16(params) {
-                    *y = v;
+                    cur.y = v;
                 }
             }
             RMB => {
                 if let Some(v) = be_i16(params) {
-                    *y = y.saturating_add(v);
+                    cur.y = cur.y.saturating_add(v);
+                }
+            }
+            SCFL => {
+                // First parameter byte is the local font id to activate.
+                if let Some(&id) = params.first() {
+                    cur.font_id = Some(id);
                 }
             }
             TRN => {
                 let text = decode_ebcdic(params);
                 let advance = (text.chars().count() as i32).saturating_mul(NOMINAL_ADVANCE);
-                runs.push(TextRun { x: *x, y: *y, text });
-                *x = x.saturating_add(advance);
+                runs.push(TextRun {
+                    x: cur.x,
+                    y: cur.y,
+                    text,
+                    font_id: cur.font_id,
+                });
+                cur.x = cur.x.saturating_add(advance);
             }
             _ => {} // unknown control sequence: skip by its length
         }
@@ -139,7 +163,20 @@ mod tests {
         data.extend(cs(TRN | 1, &ebcdic("HI"))); // text
         let runs = parse_text(&data);
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0], TextRun { x: 120, y: 300, text: "HI".into() });
+        assert_eq!(
+            runs[0],
+            TextRun { x: 120, y: 300, text: "HI".into(), font_id: None }
+        );
+    }
+
+    #[test]
+    fn scfl_selects_active_font_for_following_runs() {
+        let mut data = vec![0x2B, 0xD3];
+        data.extend(cs(SCFL, &[0x02])); // select local font 2
+        data.extend(cs(AMI, &100u16.to_be_bytes()));
+        data.extend(cs(TRN, &ebcdic("A")));
+        let runs = parse_text(&data);
+        assert_eq!(runs[0].font_id, Some(0x02));
     }
 
     #[test]
@@ -190,19 +227,22 @@ mod tests {
 
     #[test]
     fn stateful_parse_preserves_cursor_across_calls() {
-        let mut x = 0;
-        let mut y = 0;
+        let mut cur = Cursor::default();
         let mut runs = Vec::new();
         let mut a = vec![0x2B, 0xD3];
+        a.extend(cs(SCFL, &[0x01])); // font selection also persists
         a.extend(cs(AMI, &300u16.to_be_bytes()));
         a.extend(cs(AMB, &400u16.to_be_bytes()));
-        parse_into(&a, &mut x, &mut y, &mut runs);
-        // Second record continues without repeating absolute moves.
+        parse_into(&a, &mut cur, &mut runs);
+        // Second record continues without repeating absolute moves or font.
         let mut b = vec![0x2B, 0xD3];
         b.extend(cs(TRN, &ebcdic("X")));
-        parse_into(&b, &mut x, &mut y, &mut runs);
+        parse_into(&b, &mut cur, &mut runs);
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0], TextRun { x: 300, y: 400, text: "X".into() });
+        assert_eq!(
+            runs[0],
+            TextRun { x: 300, y: 400, text: "X".into(), font_id: Some(0x01) }
+        );
     }
 
     #[test]

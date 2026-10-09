@@ -7,6 +7,7 @@
 //! Modules are added task-by-task per the Phase 1 plan.
 
 pub mod build;
+pub mod font;
 pub mod ioca;
 pub mod names;
 pub mod page;

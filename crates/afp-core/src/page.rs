@@ -5,8 +5,8 @@
 //! to US Letter at 1440 L-units/inch so a page always has sane dimensions.
 
 use crate::names::{self, Kind};
-use crate::ptoca;
 use crate::tree::{Document, Node};
+use crate::{font, ptoca};
 
 /// A text run placed in page coordinates (L-units, top-left origin).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -14,6 +14,9 @@ pub struct PositionedText {
     pub x: i32,
     pub y: i32,
     pub text: String,
+    /// Text height in L-units: the selected font's point size (FOCA/MCF) when
+    /// known, otherwise the page's line-spacing estimate.
+    pub font_size_lu: i32,
 }
 
 /// An image placed on the page, in page coordinates (L-units). `node_index`
@@ -43,6 +46,9 @@ const PAGE_CAT: u8 = 0xAF; // Begin Page category
 const IMAGE_CAT: u8 = 0xFB; // Begin Image Object category
 const PGD: [u8; 3] = [0xD3, 0xA6, 0xAF]; // Page Descriptor
 const PTX: [u8; 3] = [0xD3, 0xEE, 0x9B]; // Presentation Text
+const BPT: [u8; 3] = [0xD3, 0xA8, 0x9B]; // Begin Presentation Text (object)
+const MCF: [u8; 3] = [0xD3, 0xAB, 0x8A]; // Map Coded Font (format 2)
+const FONT_UNITS_PER_INCH: f32 = 1440.0; // MCF font sizes are at 1440 upi
 const OBP: [u8; 3] = [0xD3, 0xAC, 0x6B]; // Object Area Position
 const OBD: [u8; 3] = [0xD3, 0xA6, 0x6B]; // Object Area Descriptor
 
@@ -67,20 +73,42 @@ impl Document {
 
         let (width_lu, height_lu, units_per_inch) = geometry(page, buf);
 
-        let mut texts = Vec::new();
-        let (mut cur_x, mut cur_y) = (0i32, 0i32);
-        collect_text(page, buf, &mut texts, &mut cur_x, &mut cur_y);
+        // Font point sizes per local id, merged across all Map Coded Font
+        // records in the page (a page's font mappings may span several MCFs).
+        let mut font_map = std::collections::HashMap::new();
+        collect_font_map(page, buf, &mut font_map);
+
+        // Gather raw PTOCA runs (each tagged with its selected font id),
+        // threading the cursor across PTX records.
+        let mut runs = Vec::new();
+        let mut cur = ptoca::Cursor::default();
+        collect_runs(page, buf, &mut cur, &mut runs);
+
+        // Line-spacing estimate is the fallback for runs with no mapped font.
+        let fallback = estimate_font_size(&runs, units_per_inch);
+        let texts = runs
+            .iter()
+            .map(|r| PositionedText {
+                x: r.x,
+                y: r.y,
+                text: r.text.clone(),
+                // MCF sizes are at 1440 upi; convert to the page's units.
+                font_size_lu: r
+                    .font_id
+                    .and_then(|id| font_map.get(&id).copied())
+                    .map(|sz| (sz as f32 * units_per_inch / FONT_UNITS_PER_INCH) as i32)
+                    .unwrap_or(fallback),
+            })
+            .collect();
 
         let mut images = Vec::new();
         collect_images(page, buf, &mut images);
-
-        let font_size_lu = estimate_font_size(&texts, units_per_inch);
 
         Some(PageLayout {
             width_lu,
             height_lu,
             units_per_inch,
-            font_size_lu,
+            font_size_lu: fallback,
             texts,
             images,
         })
@@ -89,8 +117,8 @@ impl Document {
 
 /// Estimate text height from the smallest positive gap between successive text
 /// baselines (line pitch ≈ 1.2 × text height). Falls back to 10pt-equivalent.
-fn estimate_font_size(texts: &[PositionedText], upi: f32) -> i32 {
-    let mut ys: Vec<i32> = texts.iter().map(|t| t.y).collect();
+fn estimate_font_size(runs: &[ptoca::TextRun], upi: f32) -> i32 {
+    let mut ys: Vec<i32> = runs.iter().map(|t| t.y).collect();
     ys.sort_unstable();
     ys.dedup();
     let min_gap = ys.windows(2).map(|w| w[1] - w[0]).filter(|&g| g > 0).min();
@@ -210,31 +238,36 @@ fn geometry(page: &Node, buf: &[u8]) -> (i32, i32, f32) {
     (DEFAULT_WIDTH_LU, DEFAULT_HEIGHT_LU, DEFAULT_UPI)
 }
 
-/// Collect positioned text across the page's PTX records, threading the PTOCA
-/// cursor so a presentation-text object split over several records stays
-/// positioned instead of resetting to the origin each record.
-fn collect_text(
-    node: &Node,
-    buf: &[u8],
-    out: &mut Vec<PositionedText>,
-    cur_x: &mut i32,
-    cur_y: &mut i32,
-) {
+/// Merge the font maps of every Map Coded Font record found under the page.
+fn collect_font_map(node: &Node, buf: &[u8], out: &mut std::collections::HashMap<u8, i32>) {
+    for child in &node.children {
+        if child.sfid == MCF {
+            for (id, size) in font::font_size_map(slice(buf, child)) {
+                out.insert(id, size);
+            }
+        }
+        collect_font_map(child, buf, out);
+    }
+}
+
+/// Collect raw PTOCA text runs, threading the decoding cursor (position +
+/// active font) across the PTX records of one presentation-text object. Each
+/// Begin Presentation Text object starts with a fresh cursor, since position
+/// and font selection do not carry across independent text objects.
+fn collect_runs(node: &Node, buf: &[u8], cur: &mut ptoca::Cursor, out: &mut Vec<ptoca::TextRun>) {
     for child in &node.children {
         if child.sfid == PTX {
             let d =
                 &buf[child.data_range.start.min(buf.len())..child.data_range.end.min(buf.len())];
-            let mut runs = Vec::new();
-            ptoca::parse_into(d, cur_x, cur_y, &mut runs);
-            for run in runs {
-                out.push(PositionedText {
-                    x: run.x,
-                    y: run.y,
-                    text: run.text,
-                });
-            }
+            ptoca::parse_into(d, cur, out);
         }
-        collect_text(child, buf, out, cur_x, cur_y);
+        if child.sfid == BPT {
+            // New text object: independent position and font selection.
+            let mut inner = ptoca::Cursor::default();
+            collect_runs(child, buf, &mut inner, out);
+        } else {
+            collect_runs(child, buf, cur, out);
+        }
     }
 }
 
@@ -275,7 +308,18 @@ mod tests {
         assert_eq!(layout.height_lu, 15840);
         assert_eq!(layout.units_per_inch, 1440.0);
         assert_eq!(layout.texts.len(), 2);
-        assert_eq!(layout.texts[0], PositionedText { x: 1440, y: 1440, text: "HELLO AFP".into() });
+        let t0 = &layout.texts[0];
+        assert_eq!((t0.x, t0.y, t0.text.as_str()), (1440, 1440, "HELLO AFP"));
+    }
+
+    #[test]
+    fn font_size_comes_from_map_coded_font() {
+        let bytes = afpgen::with_fonts();
+        let doc = Document::parse(&bytes).unwrap();
+        let layout = doc.page_layout(0, &bytes).unwrap();
+        // Line 1 selects font 2 (14pt = 280 lu); line 2 selects font 1 (10pt = 200).
+        assert_eq!(layout.texts[0].font_size_lu, 280);
+        assert_eq!(layout.texts[1].font_size_lu, 200);
     }
 
     #[test]
@@ -298,6 +342,17 @@ mod tests {
         let layout = doc.page_layout(0, &bytes).unwrap();
         let max_18pt = (18.0 / 72.0 * 1440.0) as i32;
         assert_eq!(layout.font_size_lu, max_18pt);
+    }
+
+    #[test]
+    fn active_font_does_not_leak_across_text_objects() {
+        let bytes = afpgen::two_text_objects();
+        let doc = Document::parse(&bytes).unwrap();
+        let layout = doc.page_layout(0, &bytes).unwrap();
+        // First object selected font 1 (200 L-units); second selected none, so
+        // it must fall back rather than inherit font 1's size.
+        assert_eq!(layout.texts[0].font_size_lu, 200);
+        assert_ne!(layout.texts[1].font_size_lu, 200);
     }
 
     #[test]

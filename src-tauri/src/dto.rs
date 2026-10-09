@@ -182,6 +182,7 @@ pub struct TextDto {
     pub x: i32,
     pub y: i32,
     pub text: String,
+    pub font_size_lu: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +221,7 @@ pub fn page_layout_dto(layout: &PageLayout, page_count: usize) -> PageLayoutDto 
                 x: t.x,
                 y: t.y,
                 text: t.text.clone(),
+                font_size_lu: t.font_size_lu,
             })
             .collect(),
         images: layout

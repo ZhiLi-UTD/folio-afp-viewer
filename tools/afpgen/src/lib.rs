@@ -25,6 +25,9 @@ const EIM: [u8; 3] = [0xD3, 0xA9, 0xFB];
 const IPD: [u8; 3] = [0xD3, 0xEE, 0xFB];
 const OBP: [u8; 3] = [0xD3, 0xAC, 0x6B]; // Object Area Position
 const OBD: [u8; 3] = [0xD3, 0xA6, 0x6B]; // Object Area Descriptor
+const MCF: [u8; 3] = [0xD3, 0xAB, 0x8A]; // Map Coded Font (format 2)
+const BPT: [u8; 3] = [0xD3, 0xA8, 0x9B]; // Begin Presentation Text
+const EPT: [u8; 3] = [0xD3, 0xA9, 0x9B]; // End Presentation Text
 
 /// Encode EBCDIC (A-Z, 0-9, space) for names and text. Other bytes become space.
 fn ebcdic(name: &str) -> Vec<u8> {
@@ -62,6 +65,79 @@ fn ptoca(lines: &[(u16, u16, &str)]) -> Vec<u8> {
         d.extend(cs(0xDA, &ebcdic(text))); // TRN: the characters
     }
     d
+}
+
+/// Build PTOCA text selecting a local font per `(x, y, font_id, text)` line.
+fn ptoca_fonts(lines: &[(u16, u16, u8, &str)]) -> Vec<u8> {
+    let mut d = vec![0x2B, 0xD3];
+    for (x, y, font, text) in lines {
+        d.extend(cs(0xF0, &[*font])); // SCFL: select local font
+        d.extend(cs(0xD2, &y.to_be_bytes())); // AMB
+        d.extend(cs(0xC6, &x.to_be_bytes())); // AMI
+        d.extend(cs(0xDA, &ebcdic(text))); // TRN
+    }
+    d
+}
+
+/// One MCF-2 repeating group mapping local font `id` -> vertical size `vsize`.
+fn mcf_group(id: u8, vsize: u16) -> Vec<u8> {
+    // Resource Local Id triplet: [len=4][0x24][type=05 coded font][id]
+    let rid = [0x04u8, 0x24, 0x05, id];
+    let vs = vsize.to_be_bytes();
+    // Font Descriptor Specification: [len=8][0x1F][weight][width][height(2)][hwidth(2)]
+    let fds = [0x08u8, 0x1F, 0x05, 0x05, vs[0], vs[1], vs[0], vs[1]];
+    // Two-byte repeating-group length (includes itself).
+    let rgl = (2 + rid.len() + fds.len()) as u16;
+    let mut g = rgl.to_be_bytes().to_vec();
+    g.extend_from_slice(&rid);
+    g.extend_from_slice(&fds);
+    g
+}
+
+/// Build a Map Coded Font payload mapping each `(id, vsize)` font.
+fn mcf(fonts: &[(u8, u16)]) -> Vec<u8> {
+    let mut d = Vec::new();
+    for (id, vsize) in fonts {
+        d.extend(mcf_group(*id, *vsize));
+    }
+    d
+}
+
+/// Two independent presentation-text objects on one page: the first selects a
+/// font, the second does not. Verifies the active font does not leak across
+/// text-object boundaries.
+pub fn two_text_objects() -> Vec<u8> {
+    StreamBuilder::new()
+        .begin(BDT)
+        .begin(BPG)
+        .other(PGD, &PGD_LETTER)
+        .other(MCF, &mcf(&[(1, 200)]))
+        .begin(BPT)
+        .other(PTX, &ptoca_fonts(&[(1440, 1000, 1, "A")])) // selects font 1
+        .end(EPT)
+        .begin(BPT)
+        .other(PTX, &ptoca(&[(1440, 3000, "B")])) // no font selection
+        .end(EPT)
+        .end(EPG)
+        .end(EDT)
+        .build()
+}
+
+/// A one-page document with a Map Coded Font and two differently-sized lines,
+/// exercising FOCA font-size rendering (big title, smaller body).
+pub fn with_fonts() -> Vec<u8> {
+    StreamBuilder::new()
+        .begin(BDT)
+        .begin(BPG)
+        .other(PGD, &PGD_LETTER)
+        .other(MCF, &mcf(&[(1, 200), (2, 280)])) // font 1 = 10pt, font 2 = 14pt
+        .other(
+            PTX,
+            &ptoca_fonts(&[(1440, 1440, 2, "BIG TITLE"), (1440, 2520, 1, "SMALL BODY TEXT")]),
+        )
+        .end(EPG)
+        .end(EDT)
+        .build()
 }
 
 /// Build a Fully Qualified Name triplet (id 0x02) carrying `name`.
@@ -195,6 +271,7 @@ pub fn all_fixtures() -> Vec<(&'static str, Vec<u8>)> {
         ("with-image.afp", with_image()),
         ("with-image-split.afp", with_image_split()),
         ("with-page-image.afp", with_page_image()),
+        ("with-fonts.afp", with_fonts()),
         ("malformed.afp", malformed()),
     ]
 }

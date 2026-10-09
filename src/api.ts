@@ -55,6 +55,7 @@ export interface TextDto {
   x: number;
   y: number;
   text: string;
+  fontSizeLu: number;
 }
 
 export interface PlacedImageDto {
