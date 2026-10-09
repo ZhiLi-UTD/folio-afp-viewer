@@ -42,6 +42,12 @@ const state: State = {
 
 const MAX_HEX_BYTES = 2048;
 
+// Folio's file features (Open, drag-drop, parsing) need the Tauri runtime,
+// which only exists in the desktop app — not when the UI is loaded in a plain
+// browser via the Vite dev server. Detect that so we can degrade gracefully.
+const IN_TAURI =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 // ---- Element handles ----
 const el = {
   empty: byId("empty"),
@@ -69,11 +75,26 @@ function byId(id: string): HTMLElement {
 
 // ---- Open flow ----
 async function pickAndOpen() {
+  if (!IN_TAURI) {
+    showBrowserNotice();
+    return;
+  }
   const path = await open({
     multiple: false,
     filters: [{ name: "AFP", extensions: ["afp", "lst", "prt", "out"] }],
   });
   if (typeof path === "string") await load(path);
+}
+
+/// Replace the empty-state hint with guidance when running outside the app.
+function showBrowserNotice() {
+  const hint = document.querySelector<HTMLElement>(".empty__hint");
+  if (hint) {
+    hint.innerHTML =
+      "Folio is a desktop app — opening files needs the native window. " +
+      "Launch it from the project with <code>npm run tauri dev</code> " +
+      "(this browser preview can only show the interface).";
+  }
 }
 
 async function load(path: string) {
@@ -645,7 +666,14 @@ window.addEventListener("DOMContentLoaded", () => {
     if (state.view === "render" && state.fit) fitToViewport();
   });
 
-  // Native file drag-and-drop.
+  // Outside the Tauri runtime (plain browser preview): show guidance and skip
+  // the native integrations, which would otherwise throw at startup.
+  if (!IN_TAURI) {
+    showBrowserNotice();
+    return;
+  }
+
+  // Native file drag-and-drop (Tauri only).
   getCurrentWebview()
     .onDragDropEvent((event) => {
       const p = event.payload;
@@ -658,6 +686,6 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     })
     .catch(() => {
-      /* drag-drop unavailable (e.g. plain browser dev) — Open button still works */
+      /* drag-drop unavailable — Open button still works */
     });
 });
